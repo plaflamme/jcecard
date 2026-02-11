@@ -62,7 +62,6 @@ Below is an example of how to set up the virtual OpenPGP card in GitHub Actions 
     sudo apt-get install -y \
       pcscd \
       libpcsclite1 \
-      libpcsclite-dev \
       pcsc-tools \
       gnupg \
       scdaemon
@@ -90,7 +89,7 @@ The easiest way to install the IFD handler in CI is to use the pre-built binary:
 - name: Install jcecard IFD handler
   run: |
     wget https://kushaldas.in/ifd-jcecard.tar.gz
-    echo "74ffae1782ba974549783066045d900200609242ce3c23f38a01e3fae1c1d065  ifd-jcecard.tar.gz" | sha256sum -c -
+    echo "7cd24695ddfab4708bfac5922a7d2cce9e331759d0730888a95546002efec309  ifd-jcecard.tar.gz" | sha256sum -c -
     tar xvf ifd-jcecard.tar.gz
     cd ifd-jcecard
     sudo ./install-jcecard.sh
