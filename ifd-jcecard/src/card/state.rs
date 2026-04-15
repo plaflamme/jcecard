@@ -55,6 +55,7 @@ pub struct CurveOID;
 impl CurveOID {
     pub const NIST_P256: &'static [u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
     pub const NIST_P384: &'static [u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
+    pub const NIST_P521: &'static [u8] = &[0x2B, 0x81, 0x04, 0x00, 0x23];
     pub const SECP256K1: &'static [u8] = &[0x2B, 0x81, 0x04, 0x00, 0x0A];
     pub const ED25519: &'static [u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01];
     pub const X25519: &'static [u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01];
@@ -65,6 +66,8 @@ impl CurveOID {
             Some("nistp256")
         } else if oid == Self::NIST_P384 {
             Some("nistp384")
+        } else if oid == Self::NIST_P521 {
+            Some("nistp521")
         } else if oid == Self::SECP256K1 {
             Some("secp256k1")
         } else if oid == Self::ED25519 {
@@ -172,6 +175,28 @@ impl AlgorithmAttributes {
         }
     }
 
+    /// Create NIST P-521 ECDSA algorithm attributes (for signing)
+    pub fn nistp521_ecdsa() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDSA,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::NIST_P521.to_vec(),
+        }
+    }
+
+    /// Create NIST P-521 ECDH algorithm attributes (for decryption)
+    pub fn nistp521_ecdh() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDH,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::NIST_P521.to_vec(),
+        }
+    }
+
     /// Create secp256k1 ECDSA algorithm attributes (for signing)
     pub fn secp256k1_ecdsa() -> Self {
         Self {
@@ -202,6 +227,11 @@ impl AlgorithmAttributes {
     /// Check if this is a NIST P-384 curve
     pub fn is_nistp384(&self) -> bool {
         self.curve_oid == CurveOID::NIST_P384
+    }
+
+    /// Check if this is a NIST P-521 curve
+    pub fn is_nistp521(&self) -> bool {
+        self.curve_oid == CurveOID::NIST_P521
     }
 
     /// Check if this is a secp256k1 curve

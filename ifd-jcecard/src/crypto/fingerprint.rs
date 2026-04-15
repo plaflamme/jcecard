@@ -168,9 +168,11 @@ pub fn calculate_fingerprint_ecdh(
     packet.extend_from_slice(&pk_bits.to_be_bytes());
     packet.extend_from_slice(public_key);
 
-    // KDF parameters: hash algo (SHA256=8 for P-256, SHA384=9 for P-384), cipher algo (AES128=7, AES256=9)
-    // Use SHA256/AES128 for P-256/secp256k1, SHA384/AES256 for P-384
-    let (hash_algo, cipher_algo) = if public_key.len() == 97 {
+    // KDF parameters: hash algo, cipher algo
+    // P-256/secp256k1: SHA256(8)/AES128(7), P-384: SHA384(9)/AES256(9), P-521: SHA512(10)/AES256(9)
+    let (hash_algo, cipher_algo) = if public_key.len() == 133 {
+        (10, 9)  // SHA512, AES256 for P-521
+    } else if public_key.len() == 97 {
         (9, 9)  // SHA384, AES256 for P-384
     } else {
         (8, 7)  // SHA256, AES128 for P-256/secp256k1

@@ -1,6 +1,6 @@
 [package]
 name = "ifd-jcecard"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "PC/SC IFD Handler for jcecard virtual OpenPGP and PIV smart card"
 license = "BSD-2-Clause"
@@ -43,6 +43,7 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 p384 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+p521 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 k256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 des = "0.8"
 sha1 = "0.10"

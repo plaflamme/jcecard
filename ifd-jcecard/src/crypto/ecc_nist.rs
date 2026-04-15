@@ -1,10 +1,12 @@
-//! NIST ECC Operations (P-256, P-384)
+//! NIST ECC Operations (P-256, P-384, P-521)
 //!
-//! ECDSA signing and ECDH using p256 and p384 crates.
+//! ECDSA signing and ECDH using p256, p384, and p521 crates.
 
 use p256::ecdsa::{SigningKey as P256SigningKey, Signature as P256Signature};
 use p384::ecdsa::{SigningKey as P384SigningKey, Signature as P384Signature};
+use p521::ecdsa::{SigningKey as P521SigningKey, Signature as P521Signature};
 use p256::ecdsa::signature::hazmat::PrehashSigner;
+use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rand::rngs::OsRng;
 use log::debug;
 
@@ -13,6 +15,7 @@ use log::debug;
 pub enum EccCurve {
     P256,
     P384,
+    P521,
 }
 
 /// ECC operation errors
@@ -61,6 +64,18 @@ impl EccNistOperations {
 
                 Ok((private_data, public_data))
             }
+            EccCurve::P521 => {
+                let secret_key = p521::SecretKey::random(&mut OsRng);
+
+                // Private key is 66 bytes
+                let private_data = secret_key.to_bytes().to_vec();
+
+                // Public key in uncompressed point format (0x04 || x || y)
+                let point = secret_key.public_key().to_encoded_point(false);
+                let public_data = point.as_bytes().to_vec();
+
+                Ok((private_data, public_data))
+            }
         }
     }
 
@@ -103,6 +118,21 @@ impl EccNistOperations {
                     .map_err(|e| EccError::SigningFailed(e.to_string()))?;
                 Ok(signature.to_bytes().to_vec())
             }
+            EccCurve::P521 => {
+                if private_key_bytes.len() != 66 {
+                    return Err(EccError::InvalidKey(
+                        format!("Invalid P-521 key length: expected 66, got {}", private_key_bytes.len())
+                    ));
+                }
+
+                let signing_key = P521SigningKey::from_slice(private_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(e.to_string()))?;
+
+                // Use sign_prehash since GPG sends the hash directly, not the original message
+                let signature: P521Signature = signing_key.sign_prehash(data)
+                    .map_err(|e| EccError::SigningFailed(e.to_string()))?;
+                Ok(signature.to_bytes().to_vec())
+            }
         }
     }
 
@@ -141,6 +171,19 @@ impl EccNistOperations {
                 let point = signing_key.verifying_key().to_encoded_point(false);
                 Ok(point.as_bytes().to_vec())
             }
+            EccCurve::P521 => {
+                if private_key_bytes.len() != 66 {
+                    return Err(EccError::InvalidKey(
+                        format!("Invalid P-521 key length: expected 66, got {}", private_key_bytes.len())
+                    ));
+                }
+
+                let secret_key = p521::SecretKey::from_slice(private_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(e.to_string()))?;
+
+                let point = secret_key.public_key().to_encoded_point(false);
+                Ok(point.as_bytes().to_vec())
+            }
         }
     }
 
@@ -149,6 +192,7 @@ impl EccNistOperations {
         match curve {
             EccCurve::P256 => 32,
             EccCurve::P384 => 48,
+            EccCurve::P521 => 66,
         }
     }
 
@@ -157,6 +201,7 @@ impl EccNistOperations {
         match curve {
             EccCurve::P256 => 65,  // 1 + 32 + 32
             EccCurve::P384 => 97,  // 1 + 48 + 48
+            EccCurve::P521 => 133, // 1 + 66 + 66
         }
     }
 
@@ -203,6 +248,26 @@ impl EccNistOperations {
 
                 let public_key = PublicKey::from_sec1_bytes(public_key_bytes)
                     .map_err(|e| EccError::InvalidKey(format!("Invalid P-384 public key: {}", e)))?;
+
+                let shared_secret = diffie_hellman(secret_key.to_nonzero_scalar(), public_key.as_affine());
+                Ok(shared_secret.raw_secret_bytes().to_vec())
+            }
+            EccCurve::P521 => {
+                use p521::{SecretKey, PublicKey};
+                use p521::ecdh::diffie_hellman;
+
+                if private_key_bytes.len() != 66 {
+                    return Err(EccError::InvalidKey(
+                        format!("Invalid P-521 private key length: expected 66, got {}",
+                                private_key_bytes.len())
+                    ));
+                }
+
+                let secret_key = SecretKey::from_slice(private_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(format!("Invalid P-521 private key: {}", e)))?;
+
+                let public_key = PublicKey::from_sec1_bytes(public_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(format!("Invalid P-521 public key: {}", e)))?;
 
                 let shared_secret = diffie_hellman(secret_key.to_nonzero_scalar(), public_key.as_affine());
                 Ok(shared_secret.raw_secret_bytes().to_vec())
@@ -270,5 +335,41 @@ mod tests {
 
         assert_eq!(shared_a, shared_b);
         assert_eq!(shared_a.len(), 48);
+    }
+
+    #[test]
+    fn test_generate_p521_keypair() {
+        let (private, public) = EccNistOperations::generate_keypair(EccCurve::P521).unwrap();
+        assert_eq!(private.len(), 66);
+        assert_eq!(public.len(), 133);
+        assert_eq!(public[0], 0x04);
+    }
+
+    #[test]
+    fn test_p521_sign() {
+        use sha2::{Sha512, Digest};
+        let (private, _) = EccNistOperations::generate_keypair(EccCurve::P521).unwrap();
+        let hash = Sha512::digest(b"test message");
+        let signature = EccNistOperations::sign(EccCurve::P521, &private, &hash).unwrap();
+        assert_eq!(signature.len(), 132); // r || s, each 66 bytes
+    }
+
+    #[test]
+    fn test_p521_get_public_key() {
+        let (private, public) = EccNistOperations::generate_keypair(EccCurve::P521).unwrap();
+        let derived_public = EccNistOperations::get_public_key(EccCurve::P521, &private).unwrap();
+        assert_eq!(public, derived_public);
+    }
+
+    #[test]
+    fn test_p521_ecdh() {
+        let (private_a, public_a) = EccNistOperations::generate_keypair(EccCurve::P521).unwrap();
+        let (private_b, public_b) = EccNistOperations::generate_keypair(EccCurve::P521).unwrap();
+
+        let shared_a = EccNistOperations::ecdh(EccCurve::P521, &private_a, &public_b).unwrap();
+        let shared_b = EccNistOperations::ecdh(EccCurve::P521, &private_b, &public_a).unwrap();
+
+        assert_eq!(shared_a, shared_b);
+        assert_eq!(shared_a.len(), 66);
     }
 }
