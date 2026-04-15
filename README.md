@@ -89,7 +89,7 @@ The easiest way to install the IFD handler in CI is to use the pre-built binary:
 - name: Install jcecard IFD handler
   run: |
     wget https://kushaldas.in/ifd-jcecard.tar.gz
-    echo "74ffae1782ba974549783066045d900200609242ce3c23f38a01e3fae1c1d065  ifd-jcecard.tar.gz" | sha256sum -c -
+    echo "7189722f005f902fc7cee90b3cbfca30305c4195a4f083f6678de23204ccda30  ifd-jcecard.tar.gz" | sha256sum -c -
     tar xvf ifd-jcecard.tar.gz
     cd ifd-jcecard
     sudo ./install-jcecard.sh
