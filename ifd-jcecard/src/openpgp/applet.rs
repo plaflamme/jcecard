@@ -818,7 +818,9 @@ impl OpenPGPApplet {
             let expected_size = if algorithm_id == AlgorithmID::EDDSA {
                 32 // Ed25519
             } else if algorithm_id == AlgorithmID::ECDH || algorithm_id == AlgorithmID::ECDSA {
-                if slot.algorithm.is_nistp384() {
+                if slot.algorithm.is_nistp521() {
+                    66 // P-521
+                } else if slot.algorithm.is_nistp384() {
                     48 // P-384
                 } else if slot.algorithm.is_x25519() || slot.algorithm.is_nistp256() || slot.algorithm.is_secp256k1() {
                     32 // X25519, P-256, or secp256k1
@@ -853,6 +855,8 @@ impl OpenPGPApplet {
                     EccNistOperations::get_public_key(EccCurve::P256, &key_data).ok()
                 } else if slot.algorithm.is_nistp384() {
                     EccNistOperations::get_public_key(EccCurve::P384, &key_data).ok()
+                } else if slot.algorithm.is_nistp521() {
+                    EccNistOperations::get_public_key(EccCurve::P521, &key_data).ok()
                 } else if slot.algorithm.is_secp256k1() {
                     Secp256k1Operations::get_public_key(&key_data).ok()
                 } else {
@@ -863,6 +867,8 @@ impl OpenPGPApplet {
                     EccNistOperations::get_public_key(EccCurve::P256, &key_data).ok()
                 } else if slot.algorithm.is_nistp384() {
                     EccNistOperations::get_public_key(EccCurve::P384, &key_data).ok()
+                } else if slot.algorithm.is_nistp521() {
+                    EccNistOperations::get_public_key(EccCurve::P521, &key_data).ok()
                 } else if slot.algorithm.is_secp256k1() {
                     Secp256k1Operations::get_public_key(&key_data).ok()
                 } else {
@@ -1009,6 +1015,18 @@ impl OpenPGPApplet {
                         }
                         Err(_) => return Response::error(SW::EXEC_ERROR),
                     }
+                } else if algorithm.is_nistp521() {
+                    // Generate P-521 ECDH key
+                    match EccNistOperations::generate_keypair(EccCurve::P521) {
+                        Ok((priv_key, pub_key)) => {
+                            let pub_tlv = TLVBuilder::new()
+                                .add(0x86, &pub_key)
+                                .wrap(0x7F49)
+                                .build();
+                            (priv_key, pub_tlv.clone(), pub_tlv)
+                        }
+                        Err(_) => return Response::error(SW::EXEC_ERROR),
+                    }
                 } else if algorithm.is_secp256k1() {
                     // Generate secp256k1 ECDH key
                     match Secp256k1Operations::generate_keypair() {
@@ -1039,6 +1057,17 @@ impl OpenPGPApplet {
                     }
                 } else if algorithm.is_nistp384() {
                     match EccNistOperations::generate_keypair(EccCurve::P384) {
+                        Ok((priv_key, pub_key)) => {
+                            let pub_tlv = TLVBuilder::new()
+                                .add(0x86, &pub_key)
+                                .wrap(0x7F49)
+                                .build();
+                            (priv_key, pub_tlv.clone(), pub_tlv)
+                        }
+                        Err(_) => return Response::error(SW::EXEC_ERROR),
+                    }
+                } else if algorithm.is_nistp521() {
+                    match EccNistOperations::generate_keypair(EccCurve::P521) {
                         Ok((priv_key, pub_key)) => {
                             let pub_tlv = TLVBuilder::new()
                                 .add(0x86, &pub_key)
@@ -1219,6 +1248,11 @@ impl OpenPGPApplet {
                     Ok(sig) => sig,
                     Err(_) => return Response::error(SW::EXEC_ERROR),
                 }
+            } else if algorithm.is_nistp521() {
+                match EccNistOperations::sign(EccCurve::P521, private_key_data, &cmd.data) {
+                    Ok(sig) => sig,
+                    Err(_) => return Response::error(SW::EXEC_ERROR),
+                }
             } else if algorithm.is_secp256k1() {
                 match Secp256k1Operations::sign(private_key_data, &cmd.data) {
                     Ok(sig) => sig,
@@ -1375,6 +1409,19 @@ impl OpenPGPApplet {
                         return Response::error(SW::EXEC_ERROR);
                     }
                 }
+            } else if algorithm.is_nistp521() {
+                // P-521 public key: 133 bytes (0x04 || x || y)
+                if ephemeral_pubkey.len() != 133 {
+                    debug!("PSO DECIPHER: Invalid P-521 ephemeral pubkey len: {}", ephemeral_pubkey.len());
+                    return Response::error(SW::WRONG_DATA);
+                }
+                match EccNistOperations::ecdh(EccCurve::P521, private_key_data, &ephemeral_pubkey) {
+                    Ok(shared_secret) => shared_secret,
+                    Err(e) => {
+                        debug!("PSO DECIPHER: P-521 ECDH failed: {:?}", e);
+                        return Response::error(SW::EXEC_ERROR);
+                    }
+                }
             } else if algorithm.is_secp256k1() {
                 // secp256k1 public key: 65 bytes (0x04 || x || y)
                 if ephemeral_pubkey.len() != 65 {
@@ -1445,6 +1492,11 @@ impl OpenPGPApplet {
                 }
             } else if algorithm.is_nistp384() {
                 match EccNistOperations::sign(EccCurve::P384, private_key_data, &cmd.data) {
+                    Ok(sig) => sig,
+                    Err(_) => return Response::error(SW::EXEC_ERROR),
+                }
+            } else if algorithm.is_nistp521() {
+                match EccNistOperations::sign(EccCurve::P521, private_key_data, &cmd.data) {
                     Ok(sig) => sig,
                     Err(_) => return Response::error(SW::EXEC_ERROR),
                 }
@@ -1573,59 +1625,61 @@ impl OpenPGPApplet {
     fn build_algorithm_information(&self) -> Vec<u8> {
         use crate::card::AlgorithmAttributes;
 
-        // RSA algorithms (2048, 3072, 4096 bits)
+        // Algorithm attributes for each supported algorithm
         let rsa_2048 = AlgorithmAttributes::rsa(2048).to_bytes();
         let rsa_3072 = AlgorithmAttributes::rsa(3072).to_bytes();
         let rsa_4096 = AlgorithmAttributes::rsa(4096).to_bytes();
-
-        // ECC algorithms for signing
         let eddsa = AlgorithmAttributes::ed25519().to_bytes();
         let ecdsa_p256 = AlgorithmAttributes::nistp256_ecdsa().to_bytes();
         let ecdsa_p384 = AlgorithmAttributes::nistp384_ecdsa().to_bytes();
+        let ecdsa_p521 = AlgorithmAttributes::nistp521_ecdsa().to_bytes();
         let ecdsa_secp256k1 = AlgorithmAttributes::secp256k1_ecdsa().to_bytes();
-
-        // ECC algorithms for decryption
         let ecdh_x25519 = AlgorithmAttributes::x25519().to_bytes();
         let ecdh_p256 = AlgorithmAttributes::nistp256_ecdh().to_bytes();
         let ecdh_p384 = AlgorithmAttributes::nistp384_ecdh().to_bytes();
+        let ecdh_p521 = AlgorithmAttributes::nistp521_ecdh().to_bytes();
         let ecdh_secp256k1 = AlgorithmAttributes::secp256k1_ecdh().to_bytes();
 
-        // Build signature key algorithms (C1)
-        let mut sig_algos = Vec::new();
-        sig_algos.extend_from_slice(&rsa_2048);
-        sig_algos.extend_from_slice(&rsa_3072);
-        sig_algos.extend_from_slice(&rsa_4096);
-        sig_algos.extend_from_slice(&eddsa);
-        sig_algos.extend_from_slice(&ecdsa_p256);
-        sig_algos.extend_from_slice(&ecdsa_p384);
-        sig_algos.extend_from_slice(&ecdsa_secp256k1);
+        // Build flat list of (key_type_tag, length, algo_data) entries.
+        // Each algorithm is a separate TLV entry — NOT grouped by key type.
+        // This matches the Gnuk/FOSS-Store format that openpgp-card expects.
+        let mut data = Vec::new();
 
-        // Build decryption key algorithms (C2)
-        let mut dec_algos = Vec::new();
-        dec_algos.extend_from_slice(&rsa_2048);
-        dec_algos.extend_from_slice(&rsa_3072);
-        dec_algos.extend_from_slice(&rsa_4096);
-        dec_algos.extend_from_slice(&ecdh_x25519);
-        dec_algos.extend_from_slice(&ecdh_p256);
-        dec_algos.extend_from_slice(&ecdh_p384);
-        dec_algos.extend_from_slice(&ecdh_secp256k1);
+        // Helper to append one entry: key_type_tag + length + algo_bytes
+        let mut add_entry = |tag: u8, algo: &[u8]| {
+            data.push(tag);
+            data.push(algo.len() as u8);
+            data.extend_from_slice(algo);
+        };
 
-        // Build authentication key algorithms (C3) - same as signature
-        let mut aut_algos = Vec::new();
-        aut_algos.extend_from_slice(&rsa_2048);
-        aut_algos.extend_from_slice(&rsa_3072);
-        aut_algos.extend_from_slice(&rsa_4096);
-        aut_algos.extend_from_slice(&eddsa);
-        aut_algos.extend_from_slice(&ecdsa_p256);
-        aut_algos.extend_from_slice(&ecdsa_p384);
-        aut_algos.extend_from_slice(&ecdsa_secp256k1);
+        // Signature key algorithms (C1)
+        let sig_algos: &[&[u8]] = &[
+            &rsa_2048, &rsa_3072, &rsa_4096,
+            &eddsa, &ecdsa_p256, &ecdsa_p384, &ecdsa_p521, &ecdsa_secp256k1,
+        ];
+        for algo in sig_algos {
+            add_entry(0xC1, algo);
+        }
 
-        TLVBuilder::new()
-            .add(0xC1, &sig_algos)
-            .add(0xC2, &dec_algos)
-            .add(0xC3, &aut_algos)
-            .wrap(0xFA)
-            .build()
+        // Decryption key algorithms (C2)
+        let dec_algos: &[&[u8]] = &[
+            &rsa_2048, &rsa_3072, &rsa_4096,
+            &ecdh_x25519, &ecdh_p256, &ecdh_p384, &ecdh_p521, &ecdh_secp256k1,
+        ];
+        for algo in dec_algos {
+            add_entry(0xC2, algo);
+        }
+
+        // Authentication key algorithms (C3) — same as signature
+        let aut_algos: &[&[u8]] = &[
+            &rsa_2048, &rsa_3072, &rsa_4096,
+            &eddsa, &ecdsa_p256, &ecdsa_p384, &ecdsa_p521, &ecdsa_secp256k1,
+        ];
+        for algo in aut_algos {
+            add_entry(0xC3, algo);
+        }
+
+        data
     }
 
     /// Check access condition
