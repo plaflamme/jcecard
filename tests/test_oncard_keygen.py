@@ -349,9 +349,17 @@ class GPGCardHelper:
             # Backup question - no backup (GET_LINE cardedit.genkeys.backup_enc)
             child.expect(['GET_LINE cardedit.genkeys.backup_enc', 'backup', 'y/N'], timeout=15)
             child.sendline('n')
-            
-            # User PIN required for generate (not Admin PIN!)
-            child.expect(pin_pattern, timeout=15)
+
+            # If keys already exist on the card (e.g. previous test left state),
+            # gpg asks GET_BOOL cardedit.genkeys.replace_keys before continuing.
+            # On a fresh card it goes straight to the user PIN.
+            idx = child.expect(
+                [r'GET_BOOL cardedit\.genkeys\.replace_keys', pin_pattern],
+                timeout=15,
+            )
+            if idx == 0:
+                child.sendline('y')
+                child.expect(pin_pattern, timeout=15)
             child.sendline(DEFAULT_USER_PIN)
             
             # Key expiration (GET_LINE keygen.valid)
@@ -510,9 +518,16 @@ class GPGCardHelper:
             # Backup question
             child.expect(['GET_LINE cardedit.genkeys.backup_enc', 'backup', 'y/N'], timeout=15)
             child.sendline('n')
-            
-            # User PIN required
-            child.expect(pin_pattern, timeout=15)
+
+            # Same replace-keys handling as the cv25519 path: gpg asks
+            # GET_BOOL cardedit.genkeys.replace_keys when keys already exist.
+            idx = child.expect(
+                [r'GET_BOOL cardedit\.genkeys\.replace_keys', pin_pattern],
+                timeout=15,
+            )
+            if idx == 0:
+                child.sendline('y')
+                child.expect(pin_pattern, timeout=15)
             child.sendline(DEFAULT_USER_PIN)
             
             # Key expiration
