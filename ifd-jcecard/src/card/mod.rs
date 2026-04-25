@@ -6,6 +6,7 @@
 pub mod state;
 pub mod storage;
 pub mod atr;
+pub mod card_trait;
 
 pub use state::{
     CardState, CardholderData, KeySlot, PINData, AlgorithmAttributes,
@@ -13,3 +14,4 @@ pub use state::{
 };
 pub use storage::CardDataStore;
 pub use atr::{DEFAULT_ATR, build_atr};
+pub use card_trait::Card;

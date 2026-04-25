@@ -21,6 +21,9 @@ pub mod crypto;
 pub mod openpgp;
 pub mod piv;
 
+#[cfg(feature = "nitrokey")]
+pub mod nitrokey;
+
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::ffi::{c_char, c_uchar, c_ulong, CStr};
@@ -29,10 +32,14 @@ use std::sync::Arc;
 use log::{debug, info, error};
 
 use apdu::{parse_apdu, Response};
-use card::{atr, CardDataStore};
+use card::{atr, Card, CardDataStore};
 use openpgp::OpenPGPApplet;
 use openpgp::applet::OPENPGP_AID_PREFIX;
 use piv::{PIVApplet, applet::PIV_AID};
+
+/// Number of virtual card slots this IFD handler exposes. Slot 0 is the
+/// hand-rolled jcecard, slot 1 is the Nitrokey-backed card.
+const NUM_SLOTS: usize = 2;
 
 // PC/SC lite types
 type DWORD = c_ulong;
@@ -97,8 +104,8 @@ struct VirtualCard {
 impl VirtualCard {
     /// Create a new virtual card
     fn new() -> Self {
-        // Create and load CardDataStore for OpenPGP applet
-        let mut store = CardDataStore::new(None);
+        // Slot-0 storage: ~/.jcecard/slot-0/card_state.json (with legacy migration).
+        let mut store = CardDataStore::new_for_slot(None, 0);
         store.load();  // Load existing state or initialize defaults
         Self {
             openpgp: OpenPGPApplet::new(store),
@@ -107,33 +114,6 @@ impl VirtualCard {
             atr: atr::create_openpgp_atr(),
             powered: false,
         }
-    }
-
-    /// Power on the card
-    fn power_on(&mut self) -> Vec<u8> {
-        self.powered = true;
-        self.active_applet = ActiveApplet::None;
-        info!("Virtual card powered on");
-        self.atr.clone()
-    }
-
-    /// Power off the card
-    fn power_off(&mut self) {
-        self.powered = false;
-        self.active_applet = ActiveApplet::None;
-        self.openpgp.reset();
-        self.piv.reset();
-        info!("Virtual card powered off");
-    }
-
-    /// Reset the card
-    fn reset(&mut self) -> Vec<u8> {
-        self.openpgp.reset();
-        self.piv.reset();
-        self.active_applet = ActiveApplet::None;
-        self.powered = true;
-        info!("Virtual card reset");
-        self.atr.clone()
     }
 
     /// Process an APDU command
@@ -226,60 +206,73 @@ impl VirtualCard {
     }
 }
 
-/// Holds the card state
-struct CardState {
-    /// Virtual card
-    virtual_card: VirtualCard,
-}
-
-impl CardState {
-    fn new() -> Self {
-        Self {
-            virtual_card: VirtualCard::new(),
-        }
-    }
-
-    /// Power on the card
+impl Card for VirtualCard {
     fn power_on(&mut self) -> Vec<u8> {
-        self.virtual_card.power_on()
+        self.powered = true;
+        self.active_applet = ActiveApplet::None;
+        info!("[slot 0] Virtual card powered on");
+        self.atr.clone()
     }
 
-    /// Power off the card
     fn power_off(&mut self) {
-        self.virtual_card.power_off()
+        self.powered = false;
+        self.active_applet = ActiveApplet::None;
+        self.openpgp.reset();
+        self.piv.reset();
+        info!("[slot 0] Virtual card powered off");
     }
 
-    /// Reset the card
     fn reset(&mut self) -> Vec<u8> {
-        self.virtual_card.reset()
+        self.openpgp.reset();
+        self.piv.reset();
+        self.active_applet = ActiveApplet::None;
+        self.powered = true;
+        info!("[slot 0] Virtual card reset");
+        self.atr.clone()
     }
 
-    /// Send APDU and get response
     fn transmit_apdu(&mut self, apdu: &[u8]) -> Vec<u8> {
-        self.virtual_card.process_apdu(apdu)
+        self.process_apdu(apdu)
     }
 
-    /// Check if powered
     fn is_powered(&self) -> bool {
-        self.virtual_card.powered
+        self.powered
     }
 
-    /// Get ATR
-    fn get_atr(&self) -> &[u8] {
-        &self.virtual_card.atr
+    fn atr(&self) -> &[u8] {
+        &self.atr
     }
 }
 
-/// Global state for the IFD handler
+/// A boxed, mutex-guarded card that the IFD state holds per slot.
+type SlotCard = Arc<Mutex<Box<dyn Card>>>;
+
+/// Build the per-slot card for the given slot index.
+fn build_slot_card(slot: usize) -> Option<Box<dyn Card>> {
+    match slot {
+        0 => Some(Box::new(VirtualCard::new())),
+        #[cfg(feature = "nitrokey")]
+        1 => match nitrokey::NitrokeyCard::new() {
+            Ok(card) => Some(Box::new(card)),
+            Err(e) => {
+                log_error(&format!("Failed to initialise Nitrokey slot: {}", e));
+                None
+            }
+        },
+        _ => None,
+    }
+}
+
+/// Global state for the IFD handler. Slot 0 = jcecard VirtualCard,
+/// slot 1 = Nitrokey-backed card.
 struct IfdState {
-    /// Card state per slot (we support only slot 0 for now)
-    slots: [Option<Arc<Mutex<CardState>>>; 1],
+    slots: [Option<SlotCard>; NUM_SLOTS],
 }
 
 impl IfdState {
     fn new() -> Self {
         Self {
-            slots: [None],
+            slots: Default::default(),
         }
     }
 }
@@ -292,11 +285,20 @@ fn get_state() -> &'static Mutex<IfdState> {
 }
 
 fn log_info(msg: &str) {
-    eprintln!("[ifd-jcecard] {}", msg);
+    // Use write_all + flush on a single allocated line so our output
+    // doesn't interleave mid-line with pcscd's own stderr writes (which
+    // produced log entries like "action=50000000044 pcscdaemon.c:…").
+    use std::io::Write;
+    let line = format!("[ifd-jcecard] {}\n", msg);
+    let _ = std::io::stderr().write_all(line.as_bytes());
+    let _ = std::io::stderr().flush();
 }
 
 fn log_error(msg: &str) {
-    eprintln!("[ifd-jcecard] ERROR: {}", msg);
+    use std::io::Write;
+    let line = format!("[ifd-jcecard] ERROR: {}\n", msg);
+    let _ = std::io::stderr().write_all(line.as_bytes());
+    let _ = std::io::stderr().flush();
 }
 
 // ============================================================================
@@ -323,12 +325,17 @@ pub extern "C" fn IFDHCreateChannelByName(lun: DWORD, device_name: LPSTR) -> RES
         return IFD_COMMUNICATION_ERROR;
     }
 
-    // Create card state with embedded virtual card
-    let card_state = CardState::new();
-    state.slots[slot] = Some(Arc::new(Mutex::new(card_state)));
-
-    log_info("Channel created successfully (embedded virtual card)");
-    IFD_SUCCESS
+    match build_slot_card(slot) {
+        Some(card) => {
+            state.slots[slot] = Some(Arc::new(Mutex::new(card)));
+            log_info(&format!("[slot {}] Channel created", slot));
+            IFD_SUCCESS
+        }
+        None => {
+            log_error(&format!("[slot {}] No card implementation for this slot", slot));
+            IFD_COMMUNICATION_ERROR
+        }
+    }
 }
 
 /// Create a communication channel (legacy)
@@ -344,11 +351,17 @@ pub extern "C" fn IFDHCreateChannel(lun: DWORD, channel: DWORD) -> RESPONSECODE 
         return IFD_COMMUNICATION_ERROR;
     }
 
-    let card_state = CardState::new();
-    state.slots[slot] = Some(Arc::new(Mutex::new(card_state)));
-
-    log_info("Channel created successfully (embedded virtual card)");
-    IFD_SUCCESS
+    match build_slot_card(slot) {
+        Some(card) => {
+            state.slots[slot] = Some(Arc::new(Mutex::new(card)));
+            log_info(&format!("[slot {}] Channel created", slot));
+            IFD_SUCCESS
+        }
+        None => {
+            log_error(&format!("[slot {}] No card implementation for this slot", slot));
+            IFD_COMMUNICATION_ERROR
+        }
+    }
 }
 
 /// Close the communication channel
@@ -397,7 +410,7 @@ pub extern "C" fn IFDHGetCapabilities(
             if let Some(ref card_arc) = state.slots[slot] {
                 let card = card_arc.lock();
                 if card.is_powered() {
-                    let atr = card.get_atr();
+                    let atr = card.atr();
                     let atr_len = atr.len().min(MAX_ATR_SIZE);
                     unsafe {
                         *length = atr_len as DWORD;
@@ -414,7 +427,7 @@ pub extern "C" fn IFDHGetCapabilities(
             unsafe {
                 *length = 1;
                 if !value.is_null() {
-                    *value = 1;
+                    *value = NUM_SLOTS as UCHAR;
                 }
             }
             IFD_SUCCESS
@@ -499,9 +512,13 @@ pub extern "C" fn IFDHPowerICC(
 
     match action {
         IFD_POWER_UP => {
-            log_info("Powering up virtual card");
+            log_info(&format!("[slot {}] Powering up", slot));
             let card_atr = card.power_on();
-            log_info(&format!("Card powered on, ATR length: {}", card_atr.len()));
+            log_info(&format!(
+                "[slot {}] Powered on, ATR length: {}",
+                slot,
+                card_atr.len()
+            ));
             if !atr.is_null() && !atr_length.is_null() {
                 let copy_len = card_atr.len().min(MAX_ATR_SIZE);
                 unsafe {
@@ -512,14 +529,18 @@ pub extern "C" fn IFDHPowerICC(
             IFD_SUCCESS
         }
         IFD_POWER_DOWN => {
-            log_info("Powering down virtual card");
+            log_info(&format!("[slot {}] Powering down", slot));
             card.power_off();
             IFD_SUCCESS
         }
         IFD_RESET => {
-            log_info("Resetting virtual card");
+            log_info(&format!("[slot {}] Resetting", slot));
             let card_atr = card.reset();
-            log_info(&format!("Card reset, ATR length: {}", card_atr.len()));
+            log_info(&format!(
+                "[slot {}] Reset, ATR length: {}",
+                slot,
+                card_atr.len()
+            ));
             if !atr.is_null() && !atr_length.is_null() {
                 let copy_len = card_atr.len().min(MAX_ATR_SIZE);
                 unsafe {

@@ -19,23 +19,37 @@ pub struct CardDataStore {
 impl CardDataStore {
     const DEFAULT_STATE_FILE: &'static str = "card_state.json";
 
-    /// Get the default storage directory
-    fn get_default_storage_dir() -> PathBuf {
-        // Check environment variable first
+    /// Root directory for jcecard state (`~/.jcecard` by default, overridable
+    /// via `JCECARD_STORAGE_DIR`).
+    fn get_root_storage_dir() -> PathBuf {
         if let Ok(path) = std::env::var("JCECARD_STORAGE_DIR") {
             return PathBuf::from(path);
         }
-        // Use ~/.jcecard as default (matching Python behavior for user processes)
         if let Some(home) = dirs::home_dir() {
             return home.join(".jcecard");
         }
-        // Fallback to /var/lib/jcecard
         PathBuf::from("/var/lib/jcecard")
     }
 
-    /// Create a new card data store
+    /// Per-slot storage directory: `<root>/slot-{slot}`.
+    fn get_slot_storage_dir(slot: usize) -> PathBuf {
+        Self::get_root_storage_dir().join(format!("slot-{}", slot))
+    }
+
+    /// Create a new card data store. If `storage_path` is `None`, slot 0 is
+    /// used by default (matches the pre-multi-slot behaviour).
     pub fn new(storage_path: Option<PathBuf>) -> Self {
-        let storage_dir = storage_path.unwrap_or_else(Self::get_default_storage_dir);
+        Self::new_for_slot(storage_path, 0)
+    }
+
+    /// Create a new card data store for a specific slot.
+    ///
+    /// When `storage_path` is `None`, state lives at
+    /// `~/.jcecard/slot-{slot}/card_state.json`. For slot 0, a legacy
+    /// `~/.jcecard/card_state.json` is auto-migrated to the new location on
+    /// first load (see [`Self::load`]).
+    pub fn new_for_slot(storage_path: Option<PathBuf>, slot: usize) -> Self {
+        let storage_dir = storage_path.unwrap_or_else(|| Self::get_slot_storage_dir(slot));
         let state_file = storage_dir.join(Self::DEFAULT_STATE_FILE);
 
         Self {
@@ -59,8 +73,13 @@ impl CardDataStore {
 
     /// Load card state from storage
     ///
-    /// Returns true if state was loaded, false if new state was created
+    /// Returns true if state was loaded, false if new state was created.
+    /// If a legacy `~/.jcecard/card_state.json` exists and the slot-0
+    /// directory does not yet contain one, the legacy file is migrated into
+    /// place before loading.
     pub fn load(&mut self) -> bool {
+        self.migrate_legacy_state();
+
         if !self.state_file.exists() {
             info!("No existing card state, creating new");
             self.state = CardState::default();
@@ -123,6 +142,29 @@ impl CardDataStore {
                 warn!("Failed to serialize card state: {}", e);
                 false
             }
+        }
+    }
+
+    /// Move `~/.jcecard/card_state.json` to `~/.jcecard/slot-0/card_state.json`
+    /// on first load, so existing installs keep their data. No-op if the
+    /// target already exists or the legacy file is absent.
+    fn migrate_legacy_state(&self) {
+        let legacy = Self::get_root_storage_dir().join(Self::DEFAULT_STATE_FILE);
+        if !legacy.exists() || self.state_file.exists() {
+            return;
+        }
+        // Only migrate if this store is pointing at the canonical slot-0 path.
+        let slot0 = Self::get_slot_storage_dir(0).join(Self::DEFAULT_STATE_FILE);
+        if self.state_file != slot0 {
+            return;
+        }
+        if let Err(e) = fs::create_dir_all(&self.storage_dir) {
+            warn!("Failed to create slot-0 dir during migration: {}", e);
+            return;
+        }
+        match fs::rename(&legacy, &self.state_file) {
+            Ok(()) => info!("Migrated legacy state {:?} -> {:?}", legacy, self.state_file),
+            Err(e) => warn!("Failed to migrate legacy state: {}", e),
         }
     }
 
