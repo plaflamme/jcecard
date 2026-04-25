@@ -22,6 +22,12 @@ DEFAULT_PIN = "123456"
 DEFAULT_PUK = "12345678"
 DEFAULT_MGMT_KEY = "010203040506070801020304050607080102030405060708"
 
+# Slot-0 reader name as advertised by pcscd. With two slots present (slot 0
+# jcecard + slot 1 Nitrokey), yubico-piv-tool defaults to "Yubikey" prefix
+# matching and connects to neither — so every PIV command must pin the
+# reader explicitly. List-readers / version still work fine with the flag.
+PIV_READER = "jcecard Virtual Smart Card 00 00"
+
 # Pytest marker for integration tests
 pytestmark = pytest.mark.integration
 
@@ -59,11 +65,19 @@ def is_yubico_piv_tool_installed() -> bool:
     return shutil.which("yubico-piv-tool") is not None
 
 
+def _inject_reader(cmd: str) -> str:
+    """Insert ``-r '<slot 0 reader>'`` into a yubico-piv-tool command line."""
+    prefix = "yubico-piv-tool"
+    if cmd.startswith(prefix):
+        return f"{prefix} -r '{PIV_READER}'{cmd[len(prefix):]}"
+    return cmd
+
+
 def run_cmd(cmd: str, timeout: int = 30) -> tuple[bool, str]:
     """Run a simple command and return (success, output)."""
     try:
         result = subprocess.run(
-            cmd,
+            _inject_reader(cmd),
             shell=True,
             capture_output=True,
             text=True,
@@ -98,7 +112,7 @@ def run_piv_tool_interactive(
     Returns:
         Tuple of (success, output)
     """
-    cmd = f"yubico-piv-tool {args}"
+    cmd = f"yubico-piv-tool -r '{PIV_READER}' {args}"
 
     try:
         child = pexpect.spawn(cmd, timeout=timeout, encoding="utf-8")

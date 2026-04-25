@@ -251,6 +251,20 @@ class GPGCardHelper:
             user_email=user_email,
         )
 
+    def generate_rsa4096_keys(
+        self,
+        user_name: str = "Test User",
+        user_email: str = "test@example.com",
+    ) -> bool:
+        """Generate RSA 4096 keys on card using gpg --edit-card."""
+        return self._generate_keys_via_keyattr(
+            algo_choice='1',  # RSA
+            extra_choice='4096',  # 4096-bit modulus
+            label='RSA 4096',
+            user_name=user_name,
+            user_email=user_email,
+        )
+
     def _generate_keys_via_keyattr(
         self,
         algo_choice: str,
