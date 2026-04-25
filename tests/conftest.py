@@ -16,8 +16,8 @@ from jcecard.pin_manager import PINManager
 
 
 def get_card_state_path() -> Path:
-    """Get the path to the card state file."""
-    return Path(os.path.expanduser("~/.jcecard")) / "card_state.json"
+    """Get the path to the slot-0 card state file."""
+    return Path(os.path.expanduser("~/.jcecard")) / "slot-0" / "card_state.json"
 
 
 def kill_gpg_agents():

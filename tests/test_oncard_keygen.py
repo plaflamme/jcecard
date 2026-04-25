@@ -18,6 +18,12 @@ import pexpect
 import tempfile
 import os
 import subprocess
+from typing import Optional
+
+from tests.gpg_card_helper import (
+    JCECARD_SLOT0_SUFFIX,
+    find_reader_by_suffix,
+)
 
 
 # Default PINs for virtual card
@@ -27,24 +33,68 @@ DEFAULT_ADMIN_PIN = "12345678"
 
 class GPGCardHelper:
     """Helper class to interact with GPG card operations via pexpect."""
-    
-    def __init__(self, timeout: int = 60):
-        """
-        Initialize GPG card helper.
-        
-        Uses the user's existing GNUPGHOME (or default ~/.gnupg).
-        
-        Args:
-            timeout: Default timeout for pexpect operations
+
+    def __init__(
+        self,
+        timeout: int = 60,
+        gnupg_home: Optional[str] = None,
+        reader_port: Optional[str] = None,
+    ):
+        """Initialize GPG card helper.
+
+        When ``gnupg_home`` is provided, gpg/scdaemon run against that
+        isolated GNUPGHOME. When ``reader_port`` is provided, an
+        ``scdaemon.conf`` pinning gpg to that PC/SC reader is written
+        before the first gpg invocation — required when pcscd exposes
+        more than one reader (e.g. slot 0 jcecard + slot 1 Nitrokey).
         """
         self.timeout = timeout
         self.env = os.environ.copy()
-        # Use existing GNUPGHOME or default
-        self.gnupg_home = os.environ.get('GNUPGHOME', os.path.expanduser('~/.gnupg'))
-    
+        if gnupg_home is not None:
+            self.env['GNUPGHOME'] = gnupg_home
+            self.gnupg_home = gnupg_home
+            os.makedirs(self.gnupg_home, mode=0o700, exist_ok=True)
+        else:
+            self.gnupg_home = os.environ.get(
+                'GNUPGHOME', os.path.expanduser('~/.gnupg')
+            )
+
+        if reader_port is not None:
+            self._write_scdaemon_conf(reader_port)
+
+    def _write_scdaemon_conf(self, reader_port: str) -> None:
+        """Pin scdaemon to ``reader_port`` and tear down stale agents."""
+        conf_path = os.path.join(self.gnupg_home, 'scdaemon.conf')
+        log_path = os.path.join(self.gnupg_home, 'scdaemon.log')
+        with open(conf_path, 'w') as f:
+            f.write(f"reader-port {reader_port}\n")
+            f.write("disable-ccid\n")
+            f.write("pcsc-shared\n")
+            f.write("debug-all\n")
+            f.write(f"log-file {log_path}\n")
+        os.chmod(conf_path, 0o600)
+
+        subprocess.run(
+            ['pkill', '-u', os.environ.get('USER', ''), 'scdaemon'],
+            capture_output=True,
+        )
+        subprocess.run(
+            ['pkill', '-u', os.environ.get('USER', ''), 'gpg-agent'],
+            capture_output=True,
+        )
+        subprocess.run(
+            ['gpgconf', '--kill', 'all'],
+            env=self.env,
+            capture_output=True,
+        )
+
     def cleanup(self):
-        """No cleanup needed when using user's GNUPGHOME."""
-        pass
+        """Tear down gpg-agent / scdaemon for this scratch GNUPGHOME."""
+        subprocess.run(
+            ['gpgconf', '--kill', 'all'],
+            env=self.env,
+            capture_output=True,
+        )
     
     def delete_keys_by_email(self, email: str) -> bool:
         """
@@ -299,9 +349,17 @@ class GPGCardHelper:
             # Backup question - no backup (GET_LINE cardedit.genkeys.backup_enc)
             child.expect(['GET_LINE cardedit.genkeys.backup_enc', 'backup', 'y/N'], timeout=15)
             child.sendline('n')
-            
-            # User PIN required for generate (not Admin PIN!)
-            child.expect(pin_pattern, timeout=15)
+
+            # If keys already exist on the card (e.g. previous test left state),
+            # gpg asks GET_BOOL cardedit.genkeys.replace_keys before continuing.
+            # On a fresh card it goes straight to the user PIN.
+            idx = child.expect(
+                [r'GET_BOOL cardedit\.genkeys\.replace_keys', pin_pattern],
+                timeout=15,
+            )
+            if idx == 0:
+                child.sendline('y')
+                child.expect(pin_pattern, timeout=15)
             child.sendline(DEFAULT_USER_PIN)
             
             # Key expiration (GET_LINE keygen.valid)
@@ -460,9 +518,16 @@ class GPGCardHelper:
             # Backup question
             child.expect(['GET_LINE cardedit.genkeys.backup_enc', 'backup', 'y/N'], timeout=15)
             child.sendline('n')
-            
-            # User PIN required
-            child.expect(pin_pattern, timeout=15)
+
+            # Same replace-keys handling as the cv25519 path: gpg asks
+            # GET_BOOL cardedit.genkeys.replace_keys when keys already exist.
+            idx = child.expect(
+                [r'GET_BOOL cardedit\.genkeys\.replace_keys', pin_pattern],
+                timeout=15,
+            )
+            if idx == 0:
+                child.sendline('y')
+                child.expect(pin_pattern, timeout=15)
             child.sendline(DEFAULT_USER_PIN)
             
             # Key expiration
@@ -726,9 +791,22 @@ class TestOnCardKeyGeneration:
     """
     
     @pytest.fixture
-    def gpg_helper(self):
-        """Create a GPG helper with temporary GNUPGHOME."""
-        helper = GPGCardHelper()
+    def gpg_helper(self, tmp_path):
+        """Create a GPG helper pinned to slot 0 with a scratch GNUPGHOME.
+
+        Skips if the slot-0 reader is not present (e.g. pcscd not running
+        or the IFD handler is not installed). With two readers visible,
+        scdaemon would otherwise pick slot 1 (Nitrokey) and the on-card
+        keygen flow would target the wrong applet.
+        """
+        reader = find_reader_by_suffix(JCECARD_SLOT0_SUFFIX)
+        if reader is None:
+            pytest.skip(
+                f"jcecard slot-0 reader (suffix '{JCECARD_SLOT0_SUFFIX}') not found"
+            )
+        gnupg_home = tmp_path / "gnupg-oncard"
+        gnupg_home.mkdir(mode=0o700)
+        helper = GPGCardHelper(gnupg_home=str(gnupg_home), reader_port=reader)
         yield helper
         helper.cleanup()
     

@@ -1,0 +1,23 @@
+# Minimal workspace root for the vendored Nitrokey 3 firmware component crates.
+#
+# Only the values the vendored sub-crates inherit via `workspace = true`
+# references are defined here. This is intentionally a separate workspace
+# from `ifd-jcecard` — Cargo allows path-deps to cross workspace boundaries.
+#
+# Keep in sync with nitrokey-3-firmware/Cargo.toml upstream when syncing.
+
+[workspace]
+members = [
+    "components/apps",
+    "components/utils",
+    "components/ndef-app",
+    "components/memory-regions",
+    "components/provisioner-app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.8.3"
+
+[workspace.dependencies]
+littlefs2 = "0.7"

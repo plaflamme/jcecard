@@ -28,11 +28,18 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Lint Rust
+    # Default features include `nitrokey`, so this lints + tests the full
+    # two-slot build (slot 0 jcecard + slot 1 upstream Trussed/opcard).
+    - name: Lint Rust (default features — slot 0 + slot 1)
       run: cd ifd-jcecard && cargo clippy -- -D warnings
 
-    - name: Test Rust unit tests
+    - name: Test Rust unit tests (default features — slot 0 + slot 1)
       run: just test-rust
+
+    # Slot-0-only build: protects against accidental nitrokey-required
+    # code escaping the `feature = "nitrokey"` cargo gate.
+    - name: Lint + test Rust (--no-default-features — slot 0 only)
+      run: just ci-test-no-nk
 
     - name: Build IFD handler
       run: just ci-build-ifd
@@ -63,5 +70,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: debug-logs
-        path: /tmp/pcscd_debug.log
+        path: |
+          /tmp/pcscd_debug.log
+          /tmp/pytest-of-*/gnupg-nk3-*/scdaemon.log
+          /tmp/pytest-of-*/gnupg-nk3-*/gpg-agent.log
         retention-days: 1
+        if-no-files-found: ignore
