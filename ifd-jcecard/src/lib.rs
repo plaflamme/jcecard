@@ -284,7 +284,7 @@ impl IfdState {
 static IFD_STATE: OnceCell<Mutex<IfdState>> = OnceCell::new();
 
 fn get_state() -> &'static Mutex<IfdState> {
-    IFD_STATE.get_or_init(|| Mutex::new(IfdState::new()))
+    IFD_STATE.get_or_init(|| {env_logger::init();Mutex::new(IfdState::new())})
 }
 
 fn log_info(msg: &str) {
