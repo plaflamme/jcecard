@@ -39,6 +39,9 @@ use piv::{PIVApplet, applet::PIV_AID};
 
 /// Number of virtual card slots this IFD handler exposes. Slot 0 is the
 /// hand-rolled jcecard, slot 1 is the Nitrokey-backed card.
+#[cfg(not(feature = "nitrokey"))]
+const NUM_SLOTS: usize = 1;
+#[cfg(feature = "nitrokey")]
 const NUM_SLOTS: usize = 2;
 
 // PC/SC lite types
