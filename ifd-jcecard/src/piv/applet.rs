@@ -55,7 +55,7 @@ impl PIVApplet {
             response_buffer: Vec::new(),
             response_offset: 0,
             current_challenge: None,
-            version: (1, 0, 0),
+            version: (5, 4, 3),
             serial,
             command_chain_buffer: Vec::new(),
             command_chain_ins: None,
@@ -923,7 +923,7 @@ mod tests {
         let response = applet.process_apdu(&cmd);
         assert!(response.is_okay());
         assert_eq!(response.data.len(), 3);
-        assert_eq!(response.data[0], 1); // Major version
+        assert_eq!(response.data[0], 5); // Major version
     }
 
     #[test]
